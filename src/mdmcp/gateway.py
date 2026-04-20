@@ -116,8 +116,28 @@ class HapGateway:
         self._tools = result.get("tools", [])
         return self._tools
 
+    _TOKEN_INVALID_CODES = ("600100", "600101", "\"token\":\"\"", "token无效", "token过期", "token is invalid")
+
     def call_tool(self, name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
-        return self._rpc(
-            "tools/call",
-            {"name": name, "arguments": arguments or {}},
-        )
+        params = {"name": name, "arguments": arguments or {}}
+        result = self._rpc("tools/call", params)
+        if self._looks_like_token_invalid(result):
+            log.info("HAP 工具 %s 返回 token 失效，刷新后重试一次", name)
+            from . import auth as _auth
+            _auth._cache["token"] = ""  # type: ignore[index]
+            result = self._rpc("tools/call", params)
+        return result
+
+    @classmethod
+    def _looks_like_token_invalid(cls, result: dict[str, Any]) -> bool:
+        """HAP 在 JSON-RPC 成功响应里用 content 文本里的 error_code 表达 token 失效。"""
+        content = result.get("content")
+        if not isinstance(content, list):
+            return False
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text")
+            if isinstance(text, str) and any(code in text for code in cls._TOKEN_INVALID_CODES):
+                return True
+        return False
