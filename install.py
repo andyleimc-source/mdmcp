@@ -253,10 +253,29 @@ def step_done() -> None:
     print("  · 「列出公司所有部门」")
 
 
+def preflight() -> None:
+    """开工前最低门槛检查：Python 版本 + 命令可用性。"""
+    major, minor = sys.version_info[:2]
+    if (major, minor) < (3, 10):
+        err(f"Python {major}.{minor} 过低，mdmcp 要求 ≥ 3.10。建议用 Homebrew 装 python@3.12 或更高版本后重试。")
+        sys.exit(1)
+    if shutil.which("python3") is None:
+        err("未检测到 python3 可执行文件。请先安装 Python 3.10+。")
+        sys.exit(1)
+    # venv / pip 模块内置，一般都有；保险起见做个轻量探测
+    try:
+        subprocess.run([sys.executable, "-m", "venv", "--help"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+    except subprocess.CalledProcessError:
+        err(f"{sys.executable} 不含 venv 模块。Linux 用户请装 python3-venv；macOS 用户请换 Homebrew Python。")
+        sys.exit(1)
+
+
 def main() -> None:
     print("=" * 56)
     print("  mdmcp 交互式安装")
     print("=" * 56)
+    preflight()
     py = step_venv()
     creds = step_credentials(py)
     step_ping(py, creds)
