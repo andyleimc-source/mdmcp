@@ -107,15 +107,20 @@ def ensure_hap_token() -> str:
     _load_env()
     account_id = os.getenv("MD_ACCOUNT_ID", "").strip()
     refresh_token = os.getenv("MD_HAP_REFRESH_TOKEN", "").strip()
+    hap_token_seed = os.getenv("MD_HAP_TOKEN", "").strip()
     register_url = os.getenv("MD_HAP_REGISTER_HOOK", HAP_REGISTER_HOOK_DEFAULT).strip()
     token_url = os.getenv("MD_HAP_TOKEN_HOOK", HAP_TOKEN_HOOK_DEFAULT).strip()
-    if not account_id or not refresh_token:
+    if not account_id or not refresh_token or not hap_token_seed:
         raise RuntimeError(
-            "Missing MD_ACCOUNT_ID or MD_HAP_REFRESH_TOKEN. "
-            "在 .env 配置 HAP 个人授权拿到的 refresh_token。"
+            "Missing MD_ACCOUNT_ID / MD_HAP_REFRESH_TOKEN / MD_HAP_TOKEN。"
+            "在 .env 同时配置 HAP 个人授权拿到的 refresh_token 和 access token。"
         )
 
-    reg = _hap_post(register_url, {"account_id": account_id, "hap_refresh_token": refresh_token})
+    reg = _hap_post(register_url, {
+        "account_id": account_id,
+        "hap_refresh_token": refresh_token,
+        "hap_token": hap_token_seed,
+    })
     hap_key = reg.get("hap_key") or ""
     if not hap_key:
         raise RuntimeError(f"HAP register 未返回 hap_key：{reg!r}")

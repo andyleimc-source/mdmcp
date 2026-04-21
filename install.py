@@ -141,26 +141,28 @@ def step_credentials(py: Path) -> dict[str, str]:
         sys.exit(1)
     out = {"MD_ACCOUNT_ID": creds["MD_ACCOUNT_ID"], "MD_KEY": creds["MD_KEY"]}
 
-    # HAP 网关 refresh_token（独立链路，不强制）
+    # HAP 网关凭据（独立链路，不强制；需要 refresh_token + access token 一起注册到服务端）
     print()
-    info("HAP 网关 refresh_token（让你在 Claude Code 里直接用 48 个 HAP 工具）")
-    print("  • 去明道 HAP「集成 → 个人授权」页面拿 refresh_token")
-    print("  • 留空回车 = 跳过，仅启用 v1 协作 API 的 50 个工具")
+    info("HAP 网关凭据（让你在 Claude Code 里直接用 48 个 HAP 工具）")
+    print("  • 去明道 HAP「集成 → 个人授权」页面，复制 refresh_token 和 access token")
+    print("  • 任一留空 = 跳过 HAP，仅启用 v1 协作 API 的 50 个工具")
     existing_rt = creds.get("MD_HAP_REFRESH_TOKEN", "")
-    if existing_rt:
-        ok(f".env 已存在 MD_HAP_REFRESH_TOKEN（…{existing_rt[-6:]}）")
-        if ask_yes("要重新填写吗？", default=False):
-            existing_rt = ""
-    if not existing_rt:
-        rt = input("MD_HAP_REFRESH_TOKEN: ").strip()
-        if rt:
-            write_env({"MD_HAP_REFRESH_TOKEN": rt})
-            out["MD_HAP_REFRESH_TOKEN"] = rt
-            ok("已写入 .env")
-        else:
-            warn("跳过 HAP refresh_token，HAP 网关工具将不可用")
+    existing_tk = creds.get("MD_HAP_TOKEN", "")
+    if existing_rt and existing_tk:
+        ok(f".env 已存在 HAP 凭据（refresh…{existing_rt[-6:]} / token…{existing_tk[-6:]}）")
+        if not ask_yes("要重新填写吗？", default=False):
+            out["MD_HAP_REFRESH_TOKEN"] = existing_rt
+            out["MD_HAP_TOKEN"] = existing_tk
+            return out
+    rt = input("MD_HAP_REFRESH_TOKEN: ").strip()
+    tk = input("MD_HAP_TOKEN: ").strip() if rt else ""
+    if rt and tk:
+        write_env({"MD_HAP_REFRESH_TOKEN": rt, "MD_HAP_TOKEN": tk})
+        out["MD_HAP_REFRESH_TOKEN"] = rt
+        out["MD_HAP_TOKEN"] = tk
+        ok("已写入 .env")
     else:
-        out["MD_HAP_REFRESH_TOKEN"] = existing_rt
+        warn("HAP 凭据不完整，跳过 HAP 网关；v1 工具不受影响")
     return out
 
 
@@ -202,23 +204,28 @@ def step_ping(py: Path, creds: dict[str, str]) -> None:
         sys.exit(1)
     ok("v1 凭据有效")
 
-    if not creds.get("MD_HAP_REFRESH_TOKEN"):
-        warn("未填 MD_HAP_REFRESH_TOKEN，跳过 HAP 网关验证")
+    if not creds.get("MD_HAP_REFRESH_TOKEN") or not creds.get("MD_HAP_TOKEN"):
+        warn("未填 HAP refresh_token / token，跳过 HAP 网关验证")
         return
 
     rt = creds["MD_HAP_REFRESH_TOKEN"]
+    tk = creds["MD_HAP_TOKEN"]
 
     # ── HAP register ──
-    print("\n[hap.1] 调用 HAP register hook（refresh_token → hap_key）")
+    print("\n[hap.1] 调用 HAP register hook（绑定 refresh_token + token → hap_key）")
     print("  POST https://api.mingdao.com/workflow/hooks2/NjllNjNkYzNiODBlZTc3YjE3NDM1Y2U2")
-    print(f"  body: {{\"account_id\":\"{creds['MD_ACCOUNT_ID']}\",\"hap_refresh_token\":\"***{rt[-6:]}\"}}")
+    print(f"  body: {{\"account_id\":\"{creds['MD_ACCOUNT_ID']}\",\"hap_refresh_token\":\"***{rt[-6:]}\",\"hap_token\":\"***{tk[-6:]}\"}}")
     if not ask_yes("继续打这个请求吗？", default=True):
         warn("用户跳过 HAP 验证")
         return
     code = (
         "import os, json, urllib.request;"
         "url='https://api.mingdao.com/workflow/hooks2/NjllNjNkYzNiODBlZTc3YjE3NDM1Y2U2';"
-        "body=json.dumps({'account_id':os.environ['MD_ACCOUNT_ID'],'hap_refresh_token':os.environ['MD_HAP_REFRESH_TOKEN']}).encode();"
+        "body=json.dumps({"
+        "'account_id':os.environ['MD_ACCOUNT_ID'],"
+        "'hap_refresh_token':os.environ['MD_HAP_REFRESH_TOKEN'],"
+        "'hap_token':os.environ['MD_HAP_TOKEN']"
+        "}).encode();"
         "req=urllib.request.Request(url,data=body,headers={'Content-Type':'application/json'});"
         "print(urllib.request.urlopen(req,timeout=30).read().decode())"
     )
@@ -286,8 +293,9 @@ def step_mcp_config(py: Path, creds: dict[str, str]) -> None:
         "MD_ACCOUNT_ID": creds["MD_ACCOUNT_ID"],
         "MD_KEY": creds["MD_KEY"],
     }
-    if creds.get("MD_HAP_REFRESH_TOKEN"):
+    if creds.get("MD_HAP_REFRESH_TOKEN") and creds.get("MD_HAP_TOKEN"):
         env_block["MD_HAP_REFRESH_TOKEN"] = creds["MD_HAP_REFRESH_TOKEN"]
+        env_block["MD_HAP_TOKEN"] = creds["MD_HAP_TOKEN"]
     server_entry = {
         "type": "stdio",
         "command": str(py),
@@ -329,8 +337,11 @@ def step_mcp_config(py: Path, creds: dict[str, str]) -> None:
                 "-e", f"MD_ACCOUNT_ID={creds['MD_ACCOUNT_ID']}",
                 "-e", f"MD_KEY={creds['MD_KEY']}",
             ]
-            if creds.get("MD_HAP_REFRESH_TOKEN"):
-                cmd += ["-e", f"MD_HAP_REFRESH_TOKEN={creds['MD_HAP_REFRESH_TOKEN']}"]
+            if creds.get("MD_HAP_REFRESH_TOKEN") and creds.get("MD_HAP_TOKEN"):
+                cmd += [
+                    "-e", f"MD_HAP_REFRESH_TOKEN={creds['MD_HAP_REFRESH_TOKEN']}",
+                    "-e", f"MD_HAP_TOKEN={creds['MD_HAP_TOKEN']}",
+                ]
             cmd += ["--", str(py), "-m", "mdmcp.server"]
             try:
                 run(cmd)
@@ -346,10 +357,12 @@ def step_mcp_config(py: Path, creds: dict[str, str]) -> None:
 
 def print_user_level_hint(py: Path, creds: dict[str, str]) -> None:
     print("\n—— 手动配置 Claude Code（用户级）——")
-    hap_env = (
-        f" -e MD_HAP_REFRESH_TOKEN={creds['MD_HAP_REFRESH_TOKEN']}"
-        if creds.get("MD_HAP_REFRESH_TOKEN") else ""
-    )
+    hap_env = ""
+    if creds.get("MD_HAP_REFRESH_TOKEN") and creds.get("MD_HAP_TOKEN"):
+        hap_env = (
+            f" -e MD_HAP_REFRESH_TOKEN={creds['MD_HAP_REFRESH_TOKEN']}"
+            f" -e MD_HAP_TOKEN={creds['MD_HAP_TOKEN']}"
+        )
     print(
         f"claude mcp add mdmcp --scope user "
         f"-e MD_ACCOUNT_ID={creds['MD_ACCOUNT_ID']} "
