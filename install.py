@@ -26,6 +26,10 @@ VENV = ROOT / ".venv"
 ENV_FILE = ROOT / ".env"
 MCP_JSON = ROOT / ".mcp.json"
 
+# 调试模式：MDMCP_INSTALL_DEBUG=1 或 --debug 启用，逐步显示每个网络请求并 y/n 确认
+DEBUG = os.getenv("MDMCP_INSTALL_DEBUG", "").strip() in ("1", "true", "yes") \
+        or "--debug" in sys.argv
+
 
 def info(msg: str) -> None:
     print(f"\033[36m[mdmcp]\033[0m {msg}")
@@ -181,9 +185,36 @@ def _stepwise_call(py: Path, env: dict, label: str, code: str) -> tuple[bool, st
         return False, (e.stdout or "") + (e.stderr or "")
 
 
+def _step_ping_quiet(py: Path, creds: dict[str, str], env: dict) -> None:
+    """普通用户模式：静默验证，只打 ✅/⚠️。"""
+    success, output = _stepwise_call(py, env, "v1 token",
+        "from mdmcp.auth import ensure_access_token; t=ensure_access_token(); print(len(t))")
+    if not success:
+        err(f"v1 token 换取失败：{output.strip()}")
+        sys.exit(1)
+    ok("v1 凭据有效")
+
+    if not creds.get("MD_HAP_REFRESH_TOKEN") or not creds.get("MD_HAP_TOKEN"):
+        warn("未填 HAP 凭据，跳过 HAP 网关；仅启用 50 个 v1 工具")
+        return
+    success, output = _stepwise_call(py, env, "HAP token",
+        "from mdmcp.auth import ensure_hap_token; t=ensure_hap_token(); print(len(t))")
+    if success:
+        ok("HAP 凭据有效（48 个 HAP 工具可用）")
+    else:
+        warn(f"HAP 验证失败，HAP 工具启动时会跳过；v1 不受影响")
+        warn(f"  详情：{output.strip().splitlines()[-1] if output.strip() else '(空响应)'}")
+
+
 def step_ping(py: Path, creds: dict[str, str]) -> None:
-    info("步骤 3/5：验证凭据可用（每个调用都会先展示输入/输出，确认后继续）")
+    info("步骤 3/5：验证凭据可用")
     env = {**os.environ, **creds}
+
+    if not DEBUG:
+        _step_ping_quiet(py, creds, env)
+        return
+
+    info("（调试模式：每个调用都会先展示输入/输出，确认后继续）")
 
     # ── v1 token 接口 ──
     print("\n[v1.1] 调用 v1 token hook")
