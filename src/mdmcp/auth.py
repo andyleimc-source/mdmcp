@@ -43,9 +43,12 @@ _cache: dict[str, Any] = {"token": "", "expires_at": 0}
 _hap_cache: dict[str, Any] = {"hap_key": "", "token": "", "expires_at": 0}
 
 
+MDMCP_USER_HOME = Path.home() / ".mdmcp"
+
+
 def _load_env() -> None:
-    """Lazy load .env from cwd or package parent."""
-    for d in [Path.cwd(), Path(__file__).resolve().parent.parent.parent]:
+    """Lazy load .env from cwd → ~/.mdmcp → package parent (clone repo root)."""
+    for d in [Path.cwd(), MDMCP_USER_HOME, Path(__file__).resolve().parent.parent.parent]:
         env = d / ".env"
         if not env.exists():
             continue

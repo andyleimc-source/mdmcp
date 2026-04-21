@@ -3,8 +3,8 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mdmcp"
-version = "0.1.1"
+name = "mdymcp"
+version = "0.1.2"
 description = "Unified MCP server for Mingdao — v1 collaboration API + HAP gateway (worksheets, records, apps)"
 readme = "README.md"
 license = {text = "MIT"}
@@ -39,6 +39,7 @@ Issues = "https://github.com/andyleimc-source/mdmcp/issues"
 [project.scripts]
 mdmcp = "mdmcp.server:main"
 mdmcp-auth = "mdmcp.cli_auth:main"
+mdmcp-install = "mdmcp.cli_install:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
