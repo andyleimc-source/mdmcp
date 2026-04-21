@@ -64,25 +64,25 @@ HAP 网关需要在明道**集成中心**做一次个人授权，拿到一对 `r
 
 ### 第 1 步：集成中心 → API 库 → HAP API（个人授权）→ 立即授权
 
-![step1](docs/images/hap-step1-authorize.png)
+![step1](https://raw.githubusercontent.com/andyleimc-source/mdmcp/main/docs/images/hap-step1-authorize.png)
 
 进入「集成 → API 库」，找到 **HAP API（个人授权）**，点右上角「立即授权」走完 OAuth 流程。
 
 ### 第 2 步：「我的连接 → 授权」tab，找到刚授权的连接
 
-![step2](docs/images/hap-step2-connections.png)
+![step2](https://raw.githubusercontent.com/andyleimc-source/mdmcp/main/docs/images/hap-step2-connections.png)
 
 ### 第 3 步：进入连接，在账户行点 `...` → 查看日志
 
-![step3](docs/images/hap-step3-account-menu.png)
+![step3](https://raw.githubusercontent.com/andyleimc-source/mdmcp/main/docs/images/hap-step3-account-menu.png)
 
 ### 第 4 步：在日志列表中找一条「获取 token」→ 点查看详情
 
-![step4](docs/images/hap-step4-log-list.png)
+![step4](https://raw.githubusercontent.com/andyleimc-source/mdmcp/main/docs/images/hap-step4-log-list.png)
 
 ### 第 5 步：在「返回值」标签里复制 `access_token` 和 `refresh_token`
 
-![step5](docs/images/hap-step5-tokens.png)
+![step5](https://raw.githubusercontent.com/andyleimc-source/mdmcp/main/docs/images/hap-step5-tokens.png)
 
 把这两个值在 install.py 提示时分别粘到：
 - `MD_HAP_TOKEN:` ← 粘 `access_token`
