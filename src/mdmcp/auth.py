@@ -175,14 +175,52 @@ _CALLBACK_HTML_ERR = """<!doctype html>
 
 
 def _open_incognito(url: str) -> str:
-    """用系统默认浏览器打开 URL（复用已登录会话）。"""
+    """用隐身/无痕窗口打开 URL（避免污染默认浏览器会话）。
+
+    依次尝试 Chrome → Edge → Firefox 的隐身模式，全部失败再回落到默认浏览器。
+    无论成败都把 URL 复制到剪贴板，便于手动粘贴。
+    """
+    plat = sys.platform
+    attempts: list[tuple[str, list[str]]] = []
+
+    if plat == "darwin":
+        attempts = [
+            ("Chrome 隐身", ["open", "-na", "Google Chrome", "--args", "--incognito", "--new-window", url]),
+            ("Edge InPrivate", ["open", "-na", "Microsoft Edge", "--args", "--inprivate", "--new-window", url]),
+            ("Firefox 隐私窗口", ["open", "-na", "Firefox", "--args", "-private-window", url]),
+        ]
+    elif plat.startswith("win"):
+        attempts = [
+            ("Chrome 隐身", ["cmd", "/c", "start", "", "chrome", "--incognito", "--new-window", url]),
+            ("Edge InPrivate", ["cmd", "/c", "start", "", "msedge", "--inprivate", "--new-window", url]),
+            ("Firefox 隐私窗口", ["cmd", "/c", "start", "", "firefox", "-private-window", url]),
+        ]
+    else:
+        for name, exe, flag in [
+            ("Chrome 隐身", "google-chrome", "--incognito"),
+            ("Chromium 隐身", "chromium-browser", "--incognito"),
+            ("Chromium 隐身", "chromium", "--incognito"),
+            ("Edge InPrivate", "microsoft-edge", "--inprivate"),
+            ("Firefox 隐私窗口", "firefox", "--private-window"),
+        ]:
+            if shutil.which(exe):
+                attempts.append((name, [exe, flag, "--new-window", url]) if "firefox" not in exe else (name, [exe, flag, url]))
+
+    for label, cmd in attempts:
+        try:
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            _copy_to_clipboard(url)
+            return label
+        except Exception:
+            continue
+
     try:
         webbrowser.open(url)
+        _copy_to_clipboard(url)
+        return "默认浏览器（未找到隐身浏览器，已回落）"
     except Exception:
         _copy_to_clipboard(url)
-        return "clipboard (manual open required)"
-    _copy_to_clipboard(url)
-    return "default browser"
+        return "剪贴板（请手动粘贴打开）"
 
 
 def _copy_to_clipboard(text: str) -> bool:
