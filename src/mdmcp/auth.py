@@ -100,42 +100,49 @@ def _hap_post(url: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def ensure_hap_token() -> str:
-    """HAP 网关 token：refresh_token → register(hap_key) → token，缓存到次日本地 00:00。"""
+    """HAP 网关 token：用 install 时存下来的 hap_key 调 token hook，缓存到次日本地 00:00。
+
+    register 是一次性配置（install.py 完成后服务端已绑定 refresh_token + token →
+    hap_key）；运行时只查询，不再 register。
+    """
     if _hap_cache["token"] and time.time() < _hap_cache["expires_at"] - 60:
         return str(_hap_cache["token"])
 
     _load_env()
     account_id = os.getenv("MD_ACCOUNT_ID", "").strip()
-    refresh_token = os.getenv("MD_HAP_REFRESH_TOKEN", "").strip()
-    hap_token_seed = os.getenv("MD_HAP_TOKEN", "").strip()
-    register_url = os.getenv("MD_HAP_REGISTER_HOOK", HAP_REGISTER_HOOK_DEFAULT).strip()
+    hap_key = os.getenv("MD_HAP_KEY", "").strip()
     token_url = os.getenv("MD_HAP_TOKEN_HOOK", HAP_TOKEN_HOOK_DEFAULT).strip()
-    if not account_id or not refresh_token or not hap_token_seed:
+    if not account_id or not hap_key:
         raise RuntimeError(
-            "Missing MD_ACCOUNT_ID / MD_HAP_REFRESH_TOKEN / MD_HAP_TOKEN。"
-            "在 .env 同时配置 HAP 个人授权拿到的 refresh_token 和 access token。"
+            "Missing MD_ACCOUNT_ID or MD_HAP_KEY。请重跑 install.py 完成 HAP 注册。"
         )
-
-    reg = _hap_post(register_url, {
-        "account_id": account_id,
-        "hap_refresh_token": refresh_token,
-        "hap_token": hap_token_seed,
-    })
-    hap_key = reg.get("hap_key") or ""
-    if not hap_key:
-        raise RuntimeError(f"HAP register 未返回 hap_key：{reg!r}")
 
     tok = _hap_post(token_url, {"account_id": account_id, "hap_key": hap_key})
     token = tok.get("token") or ""
     if not token:
         raise RuntimeError(
-            f"HAP token 接口返回空，可能 refresh_token 失效。响应：{tok!r}"
+            f"HAP token 接口返回空，hap_key 可能已失效，请重跑 install.py。响应：{tok!r}"
         )
 
     _hap_cache["hap_key"] = hap_key
     _hap_cache["token"] = token
     _hap_cache["expires_at"] = _next_local_midnight_ts()
     return token
+
+
+def hap_register(account_id: str, refresh_token: str, hap_token: str) -> str:
+    """一次性注册 HAP 凭据到服务端，返回 hap_key（由 install.py 调用并持久化到 .env）。"""
+    _load_env()
+    url = os.getenv("MD_HAP_REGISTER_HOOK", HAP_REGISTER_HOOK_DEFAULT).strip()
+    reg = _hap_post(url, {
+        "account_id": account_id,
+        "hap_refresh_token": refresh_token,
+        "hap_token": hap_token,
+    })
+    hap_key = reg.get("hap_key") or ""
+    if not hap_key:
+        raise RuntimeError(f"HAP register 未返回 hap_key：{reg!r}")
+    return hap_key
 
 
 # ─────────────────────────────────────────────

@@ -185,121 +185,80 @@ def _stepwise_call(py: Path, env: dict, label: str, code: str) -> tuple[bool, st
         return False, (e.stdout or "") + (e.stderr or "")
 
 
-def _step_ping_quiet(py: Path, creds: dict[str, str], env: dict) -> None:
-    """普通用户模式：静默验证，只打 ✅/⚠️。"""
+def _hap_register_call(py: Path, env: dict) -> tuple[bool, str]:
+    code = (
+        "from mdmcp.auth import hap_register;"
+        "import os;"
+        "print(hap_register(os.environ['MD_ACCOUNT_ID'], os.environ['MD_HAP_REFRESH_TOKEN'], os.environ['MD_HAP_TOKEN']))"
+    )
+    return _stepwise_call(py, env, "HAP register", code)
+
+
+def _hap_token_validate(py: Path, env: dict) -> tuple[bool, str]:
+    code = "from mdmcp.auth import ensure_hap_token; print(len(ensure_hap_token()))"
+    return _stepwise_call(py, env, "HAP token", code)
+
+
+def step_ping(py: Path, creds: dict[str, str]) -> dict[str, str]:
+    """验证凭据；HAP 路径里完成一次性 register，把 hap_key 写回 .env 并返回。"""
+    info("步骤 3/5：验证凭据可用" + ("（调试模式 step-by-step）" if DEBUG else ""))
+    env = {**os.environ, **creds}
+    out = dict(creds)
+
+    # ── v1 token ──
+    if DEBUG:
+        print("\n[v1.1] 调用 v1 token hook")
+        print("  POST https://api.mingdao.com/workflow/hooks2/NjlkYzQ5NGIwMzM0NzkwYjg4MWY4NTk5")
+        print(f"  body: {{\"account_id\":\"{creds['MD_ACCOUNT_ID']}\",\"key\":\"***{creds['MD_KEY'][-6:]}\"}}")
+        if not ask_yes("继续打这个请求吗？", default=True):
+            err("用户中止"); sys.exit(1)
     success, output = _stepwise_call(py, env, "v1 token",
-        "from mdmcp.auth import ensure_access_token; t=ensure_access_token(); print(len(t))")
+        "from mdmcp.auth import ensure_access_token; print(len(ensure_access_token()))")
+    if DEBUG:
+        print(f"  → token 长度 {output.strip()}")
     if not success:
-        err(f"v1 token 换取失败：{output.strip()}")
-        sys.exit(1)
+        err(f"v1 token 换取失败：{output.strip()}"); sys.exit(1)
     ok("v1 凭据有效")
 
     if not creds.get("MD_HAP_REFRESH_TOKEN") or not creds.get("MD_HAP_TOKEN"):
         warn("未填 HAP 凭据，跳过 HAP 网关；仅启用 50 个 v1 工具")
-        return
-    success, output = _stepwise_call(py, env, "HAP token",
-        "from mdmcp.auth import ensure_hap_token; t=ensure_hap_token(); print(len(t))")
+        return out
+
+    # ── HAP register（一次性） ──
+    if DEBUG:
+        rt, tk = creds["MD_HAP_REFRESH_TOKEN"], creds["MD_HAP_TOKEN"]
+        print("\n[hap.1] 调用 HAP register hook（一次性绑定，写回 MD_HAP_KEY）")
+        print("  POST https://api.mingdao.com/workflow/hooks2/NjllNjNkYzNiODBlZTc3YjE3NDM1Y2U2")
+        print(f"  body: {{\"account_id\":\"{creds['MD_ACCOUNT_ID']}\",\"hap_refresh_token\":\"***{rt[-6:]}\",\"hap_token\":\"***{tk[-6:]}\"}}")
+        if not ask_yes("继续打这个请求吗？", default=True):
+            warn("用户跳过 HAP 验证"); return out
+    success, output = _hap_register_call(py, env)
+    hap_key = output.strip().splitlines()[-1] if success and output.strip() else ""
+    if DEBUG:
+        print(f"  → hap_key: {hap_key or output.strip()}")
+    if not hap_key:
+        warn(f"HAP register 失败，HAP 工具将跳过；v1 不受影响 ({output.strip()[-120:]})")
+        return out
+    write_env({"MD_HAP_KEY": hap_key})
+    out["MD_HAP_KEY"] = hap_key
+    env["MD_HAP_KEY"] = hap_key
+    ok(f"HAP 已注册（hap_key 写入 .env）")
+
+    # ── HAP token 验证 ──
+    if DEBUG:
+        print("\n[hap.2] 调用 HAP token hook 验证（hap_key → token）")
+        print("  POST https://api.mingdao.com/workflow/hooks2/NjllNjQ2NGE2NTAyMDc5NzgxMTFjM2Q3")
+        print(f"  body: {{\"account_id\":\"{creds['MD_ACCOUNT_ID']}\",\"hap_key\":\"{hap_key}\"}}")
+        if not ask_yes("继续打这个请求吗？", default=True):
+            warn("用户跳过 HAP token 验证"); return out
+    success, output = _hap_token_validate(py, env)
+    if DEBUG:
+        print(f"  → token 长度: {output.strip()}")
     if success:
         ok("HAP 凭据有效（48 个 HAP 工具可用）")
     else:
-        warn(f"HAP 验证失败，HAP 工具启动时会跳过；v1 不受影响")
-        warn(f"  详情：{output.strip().splitlines()[-1] if output.strip() else '(空响应)'}")
-
-
-def step_ping(py: Path, creds: dict[str, str]) -> None:
-    info("步骤 3/5：验证凭据可用")
-    env = {**os.environ, **creds}
-
-    if not DEBUG:
-        _step_ping_quiet(py, creds, env)
-        return
-
-    info("（调试模式：每个调用都会先展示输入/输出，确认后继续）")
-
-    # ── v1 token 接口 ──
-    print("\n[v1.1] 调用 v1 token hook")
-    print("  POST https://api.mingdao.com/workflow/hooks2/NjlkYzQ5NGIwMzM0NzkwYjg4MWY4NTk5")
-    print(f"  body: {{\"account_id\":\"{creds['MD_ACCOUNT_ID']}\",\"key\":\"***{creds['MD_KEY'][-6:]}\"}}")
-    if not ask_yes("继续打这个请求吗？", default=True):
-        err("用户中止")
-        sys.exit(1)
-    code = (
-        "from mdmcp.auth import ensure_access_token;"
-        "t=ensure_access_token();"
-        "print('TOKEN_LEN=', len(t))"
-    )
-    success, output = _stepwise_call(py, env, "v1 token", code)
-    print(f"  → {output}")
-    if not success:
-        err("v1 token 换取失败，请检查 MD_ACCOUNT_ID / MD_KEY")
-        sys.exit(1)
-    ok("v1 凭据有效")
-
-    if not creds.get("MD_HAP_REFRESH_TOKEN") or not creds.get("MD_HAP_TOKEN"):
-        warn("未填 HAP refresh_token / token，跳过 HAP 网关验证")
-        return
-
-    rt = creds["MD_HAP_REFRESH_TOKEN"]
-    tk = creds["MD_HAP_TOKEN"]
-
-    # ── HAP register ──
-    print("\n[hap.1] 调用 HAP register hook（绑定 refresh_token + token → hap_key）")
-    print("  POST https://api.mingdao.com/workflow/hooks2/NjllNjNkYzNiODBlZTc3YjE3NDM1Y2U2")
-    print(f"  body: {{\"account_id\":\"{creds['MD_ACCOUNT_ID']}\",\"hap_refresh_token\":\"***{rt[-6:]}\",\"hap_token\":\"***{tk[-6:]}\"}}")
-    if not ask_yes("继续打这个请求吗？", default=True):
-        warn("用户跳过 HAP 验证")
-        return
-    code = (
-        "import os, json, urllib.request;"
-        "url='https://api.mingdao.com/workflow/hooks2/NjllNjNkYzNiODBlZTc3YjE3NDM1Y2U2';"
-        "body=json.dumps({"
-        "'account_id':os.environ['MD_ACCOUNT_ID'],"
-        "'hap_refresh_token':os.environ['MD_HAP_REFRESH_TOKEN'],"
-        "'hap_token':os.environ['MD_HAP_TOKEN']"
-        "}).encode();"
-        "req=urllib.request.Request(url,data=body,headers={'Content-Type':'application/json'});"
-        "print(urllib.request.urlopen(req,timeout=30).read().decode())"
-    )
-    success, output = _stepwise_call(py, env, "HAP register", code)
-    print(f"  → 响应: {output}")
-    if not success:
-        warn("HAP register 调用失败，HAP 网关将跳过")
-        return
-    try:
-        hap_key = json.loads(output).get("hap_key", "")
-    except Exception:
-        hap_key = ""
-    if not hap_key:
-        warn("响应里没拿到 hap_key，HAP 网关将跳过")
-        return
-    ok(f"hap_key 拿到：{hap_key}")
-
-    # ── HAP token ──
-    print("\n[hap.2] 调用 HAP token hook（hap_key → HAP token）")
-    print("  POST https://api.mingdao.com/workflow/hooks2/NjllNjQ2NGE2NTAyMDc5NzgxMTFjM2Q3")
-    print(f"  body: {{\"account_id\":\"{creds['MD_ACCOUNT_ID']}\",\"hap_key\":\"{hap_key}\"}}")
-    if not ask_yes("继续打这个请求吗？", default=True):
-        warn("用户跳过 HAP token 验证")
-        return
-    env_with_hk = {**env, "_HAP_KEY": hap_key}
-    code = (
-        "import os, json, urllib.request;"
-        "url='https://api.mingdao.com/workflow/hooks2/NjllNjQ2NGE2NTAyMDc5NzgxMTFjM2Q3';"
-        "body=json.dumps({'account_id':os.environ['MD_ACCOUNT_ID'],'hap_key':os.environ['_HAP_KEY']}).encode();"
-        "req=urllib.request.Request(url,data=body,headers={'Content-Type':'application/json'});"
-        "print(urllib.request.urlopen(req,timeout=30).read().decode())"
-    )
-    success, output = _stepwise_call(py, env_with_hk, "HAP token", code)
-    print(f"  → 响应: {output}")
-    try:
-        hap_token = json.loads(output).get("token", "")
-    except Exception:
-        hap_token = ""
-    if hap_token:
-        ok(f"HAP token 换出成功（长度 {len(hap_token)}）")
-    else:
-        warn("HAP token 为空 —— 服务端工作流可能有 bug，refresh_token 也可能失效")
-        warn("v1 工具不受影响；HAP 工具会在 server 启动时跳过")
+        warn(f"HAP token 验证失败：{output.strip()[-160:]}")
+    return out
 
 
 def step_mcp_config(py: Path, creds: dict[str, str]) -> None:
@@ -324,9 +283,9 @@ def step_mcp_config(py: Path, creds: dict[str, str]) -> None:
         "MD_ACCOUNT_ID": creds["MD_ACCOUNT_ID"],
         "MD_KEY": creds["MD_KEY"],
     }
-    if creds.get("MD_HAP_REFRESH_TOKEN") and creds.get("MD_HAP_TOKEN"):
-        env_block["MD_HAP_REFRESH_TOKEN"] = creds["MD_HAP_REFRESH_TOKEN"]
-        env_block["MD_HAP_TOKEN"] = creds["MD_HAP_TOKEN"]
+    # 运行时只需 MD_HAP_KEY；refresh_token / hap_token 仅 install 时 register 用
+    if creds.get("MD_HAP_KEY"):
+        env_block["MD_HAP_KEY"] = creds["MD_HAP_KEY"]
     server_entry = {
         "type": "stdio",
         "command": str(py),
@@ -368,11 +327,8 @@ def step_mcp_config(py: Path, creds: dict[str, str]) -> None:
                 "-e", f"MD_ACCOUNT_ID={creds['MD_ACCOUNT_ID']}",
                 "-e", f"MD_KEY={creds['MD_KEY']}",
             ]
-            if creds.get("MD_HAP_REFRESH_TOKEN") and creds.get("MD_HAP_TOKEN"):
-                cmd += [
-                    "-e", f"MD_HAP_REFRESH_TOKEN={creds['MD_HAP_REFRESH_TOKEN']}",
-                    "-e", f"MD_HAP_TOKEN={creds['MD_HAP_TOKEN']}",
-                ]
+            if creds.get("MD_HAP_KEY"):
+                cmd += ["-e", f"MD_HAP_KEY={creds['MD_HAP_KEY']}"]
             cmd += ["--", str(py), "-m", "mdmcp.server"]
             try:
                 run(cmd)
@@ -388,12 +344,7 @@ def step_mcp_config(py: Path, creds: dict[str, str]) -> None:
 
 def print_user_level_hint(py: Path, creds: dict[str, str]) -> None:
     print("\n—— 手动配置 Claude Code（用户级）——")
-    hap_env = ""
-    if creds.get("MD_HAP_REFRESH_TOKEN") and creds.get("MD_HAP_TOKEN"):
-        hap_env = (
-            f" -e MD_HAP_REFRESH_TOKEN={creds['MD_HAP_REFRESH_TOKEN']}"
-            f" -e MD_HAP_TOKEN={creds['MD_HAP_TOKEN']}"
-        )
+    hap_env = f" -e MD_HAP_KEY={creds['MD_HAP_KEY']}" if creds.get("MD_HAP_KEY") else ""
     print(
         f"claude mcp add mdmcp --scope user "
         f"-e MD_ACCOUNT_ID={creds['MD_ACCOUNT_ID']} "
@@ -437,7 +388,7 @@ def main() -> None:
     preflight()
     py = step_venv()
     creds = step_credentials(py)
-    step_ping(py, creds)
+    creds = step_ping(py, creds)
     step_mcp_config(py, creds)
     step_done()
 
