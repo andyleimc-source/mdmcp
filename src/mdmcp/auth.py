@@ -149,6 +149,7 @@ def hap_register(account_id: str, refresh_token: str, hap_token: str) -> str:
 # OAuth 自助注册流程（mdmcp-auth 命令）
 # ─────────────────────────────────────────────
 
+import os
 import secrets
 import shutil
 import subprocess
@@ -184,17 +185,26 @@ def _open_incognito(url: str) -> str:
     attempts: list[tuple[str, list[str]]] = []
 
     if plat == "darwin":
-        attempts = [
-            ("Chrome 隐身", ["open", "-na", "Google Chrome", "--args", "--incognito", "--new-window", url]),
-            ("Edge InPrivate", ["open", "-na", "Microsoft Edge", "--args", "--inprivate", "--new-window", url]),
-            ("Firefox 隐私窗口", ["open", "-na", "Firefox", "--args", "-private-window", url]),
+        mac_candidates = [
+            ("Chrome 隐身", "Google Chrome", ["--incognito", "--new-window", url]),
+            ("Edge InPrivate", "Microsoft Edge", ["--inprivate", "--new-window", url]),
+            ("Firefox 隐私窗口", "Firefox", ["-private-window", url]),
         ]
+        for label, app_name, args in mac_candidates:
+            if not _mac_app_exists(app_name):
+                continue
+            attempts.append((label, ["open", "-na", app_name, "--args", *args]))
     elif plat.startswith("win"):
-        attempts = [
-            ("Chrome 隐身", ["cmd", "/c", "start", "", "chrome", "--incognito", "--new-window", url]),
-            ("Edge InPrivate", ["cmd", "/c", "start", "", "msedge", "--inprivate", "--new-window", url]),
-            ("Firefox 隐私窗口", ["cmd", "/c", "start", "", "firefox", "-private-window", url]),
+        win_candidates = [
+            ("Chrome 隐身", "chrome.exe", ["--incognito", "--new-window", url]),
+            ("Edge InPrivate", "msedge.exe", ["--inprivate", "--new-window", url]),
+            ("Firefox 隐私窗口", "firefox.exe", ["-private-window", url]),
         ]
+        for label, exe_name, args in win_candidates:
+            exe_path = _win_find_browser(exe_name)
+            if not exe_path:
+                continue
+            attempts.append((label, [exe_path, *args]))
     else:
         for name, exe, flag in [
             ("Chrome 隐身", "google-chrome", "--incognito"),
@@ -221,6 +231,47 @@ def _open_incognito(url: str) -> str:
     except Exception:
         _copy_to_clipboard(url)
         return "剪贴板（请手动粘贴打开）"
+
+
+def _mac_app_exists(app_name: str) -> bool:
+    for base in ("/Applications", os.path.expanduser("~/Applications")):
+        if os.path.isdir(os.path.join(base, f"{app_name}.app")):
+            return True
+    try:
+        r = subprocess.run(
+            ["mdfind", f"kMDItemCFBundleIdentifier == '*' && kMDItemDisplayName == '{app_name}.app'"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if r.stdout.strip():
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _win_find_browser(exe_name: str) -> str | None:
+    found = shutil.which(exe_name)
+    if found:
+        return found
+    candidates = {
+        "chrome.exe": [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+        ],
+        "msedge.exe": [
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        ],
+        "firefox.exe": [
+            r"C:\Program Files\Mozilla Firefox\firefox.exe",
+            r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
+        ],
+    }.get(exe_name, [])
+    for p in candidates:
+        if p and os.path.isfile(p):
+            return p
+    return None
 
 
 def _copy_to_clipboard(text: str) -> bool:
