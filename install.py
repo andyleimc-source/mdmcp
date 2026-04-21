@@ -139,7 +139,29 @@ def step_credentials(py: Path) -> dict[str, str]:
     if not creds.get("MD_ACCOUNT_ID") or not creds.get("MD_KEY"):
         err("OAuth 完成但未在 .env 找到凭据")
         sys.exit(1)
-    return {"MD_ACCOUNT_ID": creds["MD_ACCOUNT_ID"], "MD_KEY": creds["MD_KEY"]}
+    out = {"MD_ACCOUNT_ID": creds["MD_ACCOUNT_ID"], "MD_KEY": creds["MD_KEY"]}
+
+    # HAP 网关 refresh_token（独立链路，不强制）
+    print()
+    info("HAP 网关 refresh_token（让你在 Claude Code 里直接用 48 个 HAP 工具）")
+    print("  • 去明道 HAP「集成 → 个人授权」页面拿 refresh_token")
+    print("  • 留空回车 = 跳过，仅启用 v1 协作 API 的 50 个工具")
+    existing_rt = creds.get("MD_HAP_REFRESH_TOKEN", "")
+    if existing_rt:
+        ok(f".env 已存在 MD_HAP_REFRESH_TOKEN（…{existing_rt[-6:]}）")
+        if ask_yes("要重新填写吗？", default=False):
+            existing_rt = ""
+    if not existing_rt:
+        rt = input("MD_HAP_REFRESH_TOKEN: ").strip()
+        if rt:
+            write_env({"MD_HAP_REFRESH_TOKEN": rt})
+            out["MD_HAP_REFRESH_TOKEN"] = rt
+            ok("已写入 .env")
+        else:
+            warn("跳过 HAP refresh_token，HAP 网关工具将不可用")
+    else:
+        out["MD_HAP_REFRESH_TOKEN"] = existing_rt
+    return out
 
 
 def step_ping(py: Path, creds: dict[str, str]) -> None:
@@ -152,10 +174,22 @@ def step_ping(py: Path, creds: dict[str, str]) -> None:
     )
     try:
         run([str(py), "-c", code], env=env)
-        ok("凭据有效，服务端正常换出 access_token")
+        ok("v1 凭据有效，服务端正常换出 access_token")
     except subprocess.CalledProcessError:
         err("凭据无法换出 token，请检查 MD_ACCOUNT_ID / MD_KEY 或联系运营方")
         sys.exit(1)
+
+    if creds.get("MD_HAP_REFRESH_TOKEN"):
+        hap_code = (
+            "from mdmcp.auth import ensure_hap_token;"
+            "t=ensure_hap_token();"
+            "print('hap token ok, len=', len(t))"
+        )
+        try:
+            run([str(py), "-c", hap_code], env=env)
+            ok("HAP refresh_token 有效，HAP 网关 token 已换出")
+        except subprocess.CalledProcessError:
+            warn("HAP refresh_token 验证失败，HAP 网关工具启动时会跳过；v1 工具不受影响")
 
 
 def step_mcp_config(py: Path, creds: dict[str, str]) -> None:
@@ -176,14 +210,17 @@ def step_mcp_config(py: Path, creds: dict[str, str]) -> None:
         default="2",
     )
 
+    env_block = {
+        "MD_ACCOUNT_ID": creds["MD_ACCOUNT_ID"],
+        "MD_KEY": creds["MD_KEY"],
+    }
+    if creds.get("MD_HAP_REFRESH_TOKEN"):
+        env_block["MD_HAP_REFRESH_TOKEN"] = creds["MD_HAP_REFRESH_TOKEN"]
     server_entry = {
         "type": "stdio",
         "command": str(py),
         "args": ["-m", "mdmcp.server"],
-        "env": {
-            "MD_ACCOUNT_ID": creds["MD_ACCOUNT_ID"],
-            "MD_KEY": creds["MD_KEY"],
-        },
+        "env": env_block,
     }
 
     if mode in ("1", "3"):
@@ -219,8 +256,10 @@ def step_mcp_config(py: Path, creds: dict[str, str]) -> None:
                 "--scope", "user",
                 "-e", f"MD_ACCOUNT_ID={creds['MD_ACCOUNT_ID']}",
                 "-e", f"MD_KEY={creds['MD_KEY']}",
-                "--", str(py), "-m", "mdmcp.server",
             ]
+            if creds.get("MD_HAP_REFRESH_TOKEN"):
+                cmd += ["-e", f"MD_HAP_REFRESH_TOKEN={creds['MD_HAP_REFRESH_TOKEN']}"]
+            cmd += ["--", str(py), "-m", "mdmcp.server"]
             try:
                 run(cmd)
                 ok("已注册到用户级 Claude Code")
@@ -235,10 +274,14 @@ def step_mcp_config(py: Path, creds: dict[str, str]) -> None:
 
 def print_user_level_hint(py: Path, creds: dict[str, str]) -> None:
     print("\n—— 手动配置 Claude Code（用户级）——")
+    hap_env = (
+        f" -e MD_HAP_REFRESH_TOKEN={creds['MD_HAP_REFRESH_TOKEN']}"
+        if creds.get("MD_HAP_REFRESH_TOKEN") else ""
+    )
     print(
         f"claude mcp add mdmcp --scope user "
         f"-e MD_ACCOUNT_ID={creds['MD_ACCOUNT_ID']} "
-        f"-e MD_KEY={creds['MD_KEY']} "
+        f"-e MD_KEY={creds['MD_KEY']}{hap_env} "
         f"-- {py} -m mdmcp.server"
     )
     print()
