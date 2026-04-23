@@ -442,97 +442,136 @@ CLIENT_LABELS = {
 }
 
 
+# 哪些 client 支持"项目级"（写入当前目录的配置文件）；其他只做用户级
+PROJECT_CAPABLE = {"claude", "cursor", "vscode"}
+USER_CAPABLE = {"claude", "codex", "cursor", "windsurf", "antigravity", "trae"}
+
+
+def _select_clients_interactive(detection: dict[str, bool]) -> set[str]:
+    """显示编号列表，让用户选。默认 = 已检测到的；回车接受默认；输入 'all' 选全部；
+    输入逗号分隔序号自定义；输入 'none' / 'skip' 跳过全部。
+    """
+    numbered = list(CLIENT_LABELS.items())
+    detected_default = {k for k, v in detection.items() if v}
+
+    print("\n  可注册的 MCP 客户端（✓ = 已检测到安装）：")
+    for i, (k, label) in enumerate(numbered, 1):
+        marker = "✓" if detection[k] else "·"
+        print(f"    [{i}] {marker} {label}")
+    print(f"    [a] 全部 {len(numbered)} 个")
+    print(f"    [n] 跳过（都不注册）")
+    hint = (f"默认已检测到的 {len(detected_default)} 个"
+            if detected_default else "默认：跳过")
+
+    while True:
+        ans = input(f"  选择（回车=默认，序号逗号分隔，或 a / n）: ").strip().lower()
+        if not ans:
+            return detected_default
+        if ans in ("a", "all"):
+            return set(CLIENT_LABELS.keys())
+        if ans in ("n", "none", "skip"):
+            return set()
+        picks: set[str] = set()
+        bad = False
+        for token in ans.replace("，", ",").split(","):
+            token = token.strip()
+            if not token:
+                continue
+            try:
+                idx = int(token)
+                if 1 <= idx <= len(numbered):
+                    picks.add(numbered[idx - 1][0])
+                else:
+                    bad = True; break
+            except ValueError:
+                bad = True; break
+        if not bad and picks:
+            return picks
+        print(f"  输入不合法，再来一次。{hint}")
+
+
 def step_mcp_config(py: Path, root: Path, creds: dict[str, str],
-                    client_override: set[str] | None, write_project: bool) -> None:
+                    client_override: set[str] | None, write_project_flag: bool) -> None:
     info("步骤 3/4：注册到 MCP 客户端")
     env_block = _build_env_block(creds)
 
-    detection = _detect_clients()
-    detected = {c for c, hit in detection.items() if hit}
-    not_detected = {c for c, hit in detection.items() if not hit}
+    # 1) 选范围：用户级 / 项目级 / 两个都要
+    if write_project_flag:
+        # --project 等价于"两个都要"
+        scope = "3"
+    elif client_override is not None:
+        scope = "1"  # --client= 时默认只用户级
+    else:
+        print()
+        print("  • 用户级：写到你账户的配置里，任何目录打开客户端都能用（推荐）")
+        print("  • 项目级：只在当前目录有效（适合团队跟仓库分发。仅 Claude Code / Cursor / VS Code 支持）")
+        print("  • 两个都要：全局可用 + 配置随仓库分发")
+        scope = ask_choice(
+            "\n选择注册范围",
+            [("1", "用户级（推荐）"),
+             ("2", "项目级"),
+             ("3", "两个都要")],
+            default="1",
+        )
+    do_user = scope in ("1", "3")
+    do_project = scope in ("2", "3")
 
-    # 决定目标客户端
+    # 2) 选客户端
+    detection = _detect_clients()
     if client_override is not None:
         targets = client_override
         info(f"--client 指定客户端：{', '.join(sorted(targets)) or '(空)'}")
     else:
-        print()
-        if detected:
-            hit_labels = ', '.join(CLIENT_LABELS[c] for c in sorted(detected))
-            print(f"  检测到：{hit_labels}")
-        if not_detected:
-            miss_labels = ', '.join(CLIENT_LABELS[c] for c in sorted(not_detected))
-            print(f"  未检测到：{miss_labels}")
-        if not detected:
-            print("\n  一个都没识别出来。你可以继续手动选择（装上 IDE 后这份配置即生效）。")
-            targets = set()
-        elif ask_yes(f"\n注册到上面检测到的 {len(detected)} 个客户端？", default=True):
-            targets = set(detected)
-        else:
-            # 手选：列出全部 7 个，逗号分隔索引
-            print("\n  手动选择（逗号分隔序号，回车跳过）：")
-            numbered = list(CLIENT_LABELS.items())
-            for i, (k, label) in enumerate(numbered, 1):
-                marker = "✓" if detection[k] else " "
-                print(f"    [{i}] {marker} {label}")
-            ans = input("  选择: ").strip()
-            picks: set[str] = set()
-            for token in ans.replace("，", ",").split(","):
-                token = token.strip()
-                if not token:
-                    continue
-                try:
-                    idx = int(token)
-                    if 1 <= idx <= len(numbered):
-                        picks.add(numbered[idx - 1][0])
-                except ValueError:
-                    pass
-            targets = picks
+        targets = _select_clients_interactive(detection)
 
-    # 项目级：Claude .mcp.json + VS Code 的 .vscode/mcp.json 都属于项目级
-    do_project = write_project
-    if not do_project and not client_override and targets:
-        do_project = ask_yes(
-            f"\n同时在当前目录写项目级配置？"
-            f"（.mcp.json for Claude Code / .vscode/mcp.json for VS Code；便于随仓库分发）",
-            default=False,
-        )
+    # 过滤：项目级场景只保留 PROJECT_CAPABLE
+    if do_project and not do_user:
+        not_proj = {c for c in targets if c not in PROJECT_CAPABLE}
+        if not_proj:
+            labels = ', '.join(CLIENT_LABELS[c] for c in sorted(not_proj))
+            info(f"以下客户端不支持项目级，已跳过：{labels}")
+        targets = {c for c in targets if c in PROJECT_CAPABLE}
 
     registered: list[str] = []
     cwd = Path.cwd()
 
-    # 用户级
-    if "claude" in targets and detection["claude"]:
-        claude_bin = shutil.which("claude")
-        if claude_bin and _register_claude_user(claude_bin, py, env_block):
-            registered.append(f"{CLIENT_LABELS['claude']}（用户级）")
-    if "codex" in targets and _register_codex(py, env_block):
-        registered.append(f"{CLIENT_LABELS['codex']}（{CODEX_CONFIG}）")
-    if "cursor" in targets and _register_cursor(py, env_block):
-        registered.append(f"{CLIENT_LABELS['cursor']}（{CURSOR_USER_CONFIG}）")
-    if "windsurf" in targets and _register_windsurf(py, env_block):
-        registered.append(f"{CLIENT_LABELS['windsurf']}（{WINDSURF_USER_CONFIG}）")
-    if "antigravity" in targets and _register_antigravity(py, env_block):
-        registered.append(f"{CLIENT_LABELS['antigravity']}（{ANTIGRAVITY_CONFIG}）")
-    if "trae" in targets:
-        trae_path = _trae_user_config()
-        if trae_path and _register_trae(py, env_block):
-            registered.append(f"{CLIENT_LABELS['trae']}（{trae_path}）")
+    # 3) 用户级写入
+    if do_user:
+        if "claude" in targets and detection["claude"]:
+            claude_bin = shutil.which("claude")
+            if claude_bin and _register_claude_user(claude_bin, py, env_block):
+                registered.append(f"{CLIENT_LABELS['claude']}（用户级）")
+        if "codex" in targets and _register_codex(py, env_block):
+            registered.append(f"{CLIENT_LABELS['codex']}（{CODEX_CONFIG}）")
+        if "cursor" in targets and _register_cursor(py, env_block):
+            registered.append(f"{CLIENT_LABELS['cursor']}（{CURSOR_USER_CONFIG}）")
+        if "windsurf" in targets and _register_windsurf(py, env_block):
+            registered.append(f"{CLIENT_LABELS['windsurf']}（{WINDSURF_USER_CONFIG}）")
+        if "antigravity" in targets and _register_antigravity(py, env_block):
+            registered.append(f"{CLIENT_LABELS['antigravity']}（{ANTIGRAVITY_CONFIG}）")
+        if "trae" in targets:
+            trae_path = _trae_user_config()
+            if trae_path and _register_trae(py, env_block):
+                registered.append(f"{CLIENT_LABELS['trae']}（{trae_path}）")
 
-    # 项目级
+    # 4) 项目级写入
     if do_project:
-        _write_project_mcp_json(cwd, py, env_block)
-        registered.append(f"Claude Code 项目级 .mcp.json（{cwd}）")
-    if "vscode" in targets:
-        # VS Code 只有项目级（我们不碰它的全局 profile）
-        if _register_vscode(py, env_block, cwd):
-            registered.append(f"{CLIENT_LABELS['vscode']}（{_vscode_project_config(cwd)}）")
+        if "claude" in targets:
+            _write_project_mcp_json(cwd, py, env_block)
+            registered.append(f"{CLIENT_LABELS['claude']} 项目级 .mcp.json（{cwd}）")
+        if "cursor" in targets:
+            proj_cursor = cwd / ".cursor" / "mcp.json"
+            if _write_mcp_servers_json(proj_cursor, py, env_block):
+                registered.append(f"{CLIENT_LABELS['cursor']} 项目级（{proj_cursor}）")
+        if "vscode" in targets:
+            if _register_vscode(py, env_block, cwd):
+                registered.append(f"{CLIENT_LABELS['vscode']} 项目级（{_vscode_project_config(cwd)}）")
 
     if registered:
         ok("已注册到：\n  • " + "\n  • ".join(registered))
         if "antigravity" in targets:
             info("Antigravity 需要在 IDE 里打开「Manage MCP Servers → Refresh」才能看到 mdymcp")
-        if "cursor" in targets or "windsurf" in targets or "trae" in targets or "vscode" in targets:
+        if any(c in targets for c in ("cursor", "windsurf", "trae", "vscode")):
             info("Cursor / Windsurf / Trae / VS Code 需要重启或在 MCP 设置里刷新")
     else:
         warn("没有成功注册的客户端。手动命令（以 Claude Code 为例）：")
