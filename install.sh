@@ -42,4 +42,13 @@ if ! command -v mdymcp-install >/dev/null 2>&1; then
 fi
 
 info "启动交互式配置"
-exec mdymcp-install
+# curl ... | sh 会把 stdin 占给脚本本身，导致 mdymcp-install 的 input() 直接 EOF。
+# 把 stdin 重定向到 /dev/tty（真实终端），这样交互提示就能读到键盘。
+# 没有终端（如 CI）时 /dev/tty 打不开，提示用户手动接着跑。
+if [ -r /dev/tty ]; then
+    exec mdymcp-install </dev/tty
+else
+    warn "检测不到终端（可能在 CI / 非交互环境运行）。"
+    warn "请在普通终端里直接运行：mdymcp-install"
+    exit 0
+fi
