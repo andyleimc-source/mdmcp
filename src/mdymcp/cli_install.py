@@ -14,6 +14,7 @@ import os
 import shutil
 import subprocess
 import sys
+import webbrowser
 from pathlib import Path
 
 CODEX_CONFIG = Path.home() / ".codex" / "config.toml"
@@ -21,6 +22,41 @@ ANTIGRAVITY_CONFIG = Path.home() / ".gemini" / "antigravity" / "mcp_config.json"
 ALL_CLIENTS = {"claude", "codex", "antigravity"}
 DEBUG = os.getenv("MDYMCP_INSTALL_DEBUG", "").strip() in ("1", "true", "yes") \
         or "--debug" in sys.argv
+
+# HAP 个人授权页 —— 拿 refresh_token / access_token 的地方
+HAP_INTEGRATION_URL = "https://www.mingdao.com/integrationConnect/69bcae07257900ec41aa2733"
+
+
+def _resolve_uvx() -> str | None:
+    """找到 uvx 可执行文件的绝对路径。找不到返回 None。"""
+    found = shutil.which("uvx")
+    if found:
+        return found
+    candidates: list[Path] = [
+        Path.home() / ".local" / "bin" / "uvx",
+        Path.home() / ".cargo" / "bin" / "uvx",
+    ]
+    if sys.platform.startswith("win"):
+        candidates += [
+            Path.home() / ".local" / "bin" / "uvx.exe",
+            Path(os.environ.get("USERPROFILE", str(Path.home()))) / ".local" / "bin" / "uvx.exe",
+        ]
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    return None
+
+
+def _build_server_command(py: Path) -> tuple[str, list[str]]:
+    """MCP 客户端里配置的启动命令。
+
+    优先 uvx（跨平台、自带 Python 版本管理、不依赖 IDE 继承的 PATH）；
+    回落到当前解释器 + -m（兼容 pipx / clone 场景）。
+    """
+    uvx = _resolve_uvx()
+    if uvx:
+        return uvx, ["mdymcp"]
+    return str(py), ["-m", "mdymcp.server"]
 
 
 def _parse_client_flag() -> set[str] | None:
@@ -138,8 +174,6 @@ def step_credentials(py: Path, root: Path) -> dict[str, str]:
 
     print()
     info("HAP 网关凭据（让你在 Claude Code 里直接用 48 个 HAP 工具）")
-    print("  • 去明道 HAP「集成 → 个人授权」页面，复制 refresh_token 和 access token")
-    print("  • 任一留空 = 跳过 HAP，仅启用 v1 协作 API 的 50 个工具")
     existing_rt = creds.get("MD_HAP_REFRESH_TOKEN", "")
     existing_tk = creds.get("MD_HAP_TOKEN", "")
     if existing_rt and existing_tk:
@@ -150,6 +184,15 @@ def step_credentials(py: Path, root: Path) -> dict[str, str]:
             if creds.get("MD_HAP_KEY"):
                 out["MD_HAP_KEY"] = creds["MD_HAP_KEY"]
             return out
+
+    print(f"  • 即将打开 HAP 个人授权页：{HAP_INTEGRATION_URL}")
+    print("  • 授权后在页面拿到 refresh_token 和 access_token，粘回下面")
+    print("  • 任一留空 = 跳过 HAP，仅启用 v1 协作 API 的 50 个工具")
+    try:
+        webbrowser.open(HAP_INTEGRATION_URL)
+    except Exception:
+        warn("浏览器没自动打开，请手动复制上面的 URL")
+
     rt = input("MD_HAP_REFRESH_TOKEN: ").strip()
     tk = input("MD_HAP_TOKEN: ").strip() if rt else ""
     if rt and tk:
@@ -229,7 +272,8 @@ def _register_claude_user(claude_bin: str, py: Path, env_block: dict[str, str]) 
     cmd = [claude_bin, "mcp", "add", "mdymcp", "--scope", "user"]
     for k, v in env_block.items():
         cmd += ["-e", f"{k}={v}"]
-    cmd += ["--", str(py), "-m", "mdymcp.server"]
+    server_cmd, server_args = _build_server_command(py)
+    cmd += ["--", server_cmd, *server_args]
     try:
         run(cmd, stdout=subprocess.DEVNULL)
         return True
@@ -240,8 +284,9 @@ def _register_claude_user(claude_bin: str, py: Path, env_block: dict[str, str]) 
 
 def _write_project_mcp_json(root: Path, py: Path, env_block: dict[str, str]) -> None:
     mcp_json = root / ".mcp.json"
-    server_entry = {"type": "stdio", "command": str(py),
-                    "args": ["-m", "mdymcp.server"], "env": env_block}
+    server_cmd, server_args = _build_server_command(py)
+    server_entry = {"type": "stdio", "command": server_cmd,
+                    "args": server_args, "env": env_block}
     existing: dict = {}
     if mcp_json.exists():
         try:
@@ -272,11 +317,14 @@ def _register_codex(py: Path, env_block: dict[str, str]) -> bool:
         if not skip:
             out_lines.append(line)
 
-    env_inline = ", ".join(f'{k} = "{v}"' for k, v in env_block.items())
+    server_cmd, server_args = _build_server_command(py)
+    # 用 json.dumps 生成 TOML basic string —— JSON 的转义规则是 TOML basic 的子集，保证 Windows 带反斜杠的路径也安全
+    args_inline = "[" + ", ".join(json.dumps(a) for a in server_args) + "]"
+    env_inline = ", ".join(f"{k} = {json.dumps(v)}" for k, v in env_block.items())
     block = [
         "[mcp_servers.mdymcp]",
-        f'command = "{py}"',
-        'args = ["-m", "mdymcp.server"]',
+        f"command = {json.dumps(server_cmd)}",
+        f"args = {args_inline}",
         f"env = {{ {env_inline} }}",
     ]
     body = "\n".join(out_lines).rstrip()
@@ -288,9 +336,10 @@ def _register_codex(py: Path, env_block: dict[str, str]) -> bool:
 def _register_antigravity(py: Path, env_block: dict[str, str]) -> bool:
     """写 ~/.gemini/antigravity/mcp_config.json，合并已有 mcpServers。"""
     ANTIGRAVITY_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    server_cmd, server_args = _build_server_command(py)
     server_entry = {
-        "command": str(py),
-        "args": ["-m", "mdymcp.server"],
+        "command": server_cmd,
+        "args": server_args,
         "env": env_block,
     }
     existing: dict = {}
